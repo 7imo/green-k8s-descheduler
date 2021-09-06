@@ -1,0 +1,11 @@
+{
+	"folders": [
+		{
+			"path": "../green-k8s-scheduler"
+		},
+		{
+			"path": "."
+		}
+	],
+	"settings": {}
+}
