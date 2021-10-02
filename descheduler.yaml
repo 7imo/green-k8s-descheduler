@@ -23,8 +23,6 @@ kind: ConfigMap
 metadata:
   name: green-k8s-descheduler-config
   namespace: kube-system
-data:
-  interval: "60"
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -51,13 +49,7 @@ spec:
       containers:
       - name: green-k8s-descheduler
         image: timokraus/green-k8s-descheduler
-        imagePullPolicy: IfNotPresent
+        imagePullPolicy: Always
         volumeMounts:
         - name: green-k8s-descheduler-config
           mountPath: /green-k8s-descheduler
-        env: 
-        - name: DESCHEDULING_INTERVAL
-          valueFrom:
-            configMapKeyRef:
-              name: green-k8s-descheduler-config 
-              key: interval

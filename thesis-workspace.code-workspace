@@ -5,6 +5,9 @@
 		},
 		{
 			"path": "."
+		},
+		{
+			"path": "../renewable-data-simulator"
 		}
 	],
 	"settings": {}

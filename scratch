@@ -16,7 +16,6 @@ import (
 )
 
 const MAX_SCORE = 100
-const INTERVAL = 60
 
 type Pair struct {
 	Key   string
@@ -134,7 +133,7 @@ func main() {
 	}
 	for {
 
-		//var interval int = getInterval()
+		var interval int = getInterval()
 
 		// list all nodes (only worker nodes?)
 		nodeList, err := clientset.CoreV1().Nodes().List(context.TODO(), metav1.ListOptions{})
@@ -153,6 +152,6 @@ func main() {
 		log.Printf("Node %v has the smallest renewable energy share / score... Evicting pods from node", lowestScoreNode)
 		evictNodePods(lowestScoreNode, clientset)
 
-		time.Sleep(time.Duration(INTERVAL) * time.Second)
+		time.Sleep(time.Duration(interval) * time.Second)
 	}
 }
