@@ -4,7 +4,6 @@ import (
 	"context"
 	"log"
 	"math"
-	"os"
 	"sort"
 	"strconv"
 	"time"
@@ -15,7 +14,7 @@ import (
 	"k8s.io/client-go/rest"
 )
 
-const MAX_SCORE = 100
+const MAX_SCORE = 10
 const INTERVAL = 60
 
 type Pair struct {
@@ -29,18 +28,6 @@ func (p PairList) Len() int           { return len(p) }
 func (p PairList) Swap(i, j int)      { p[i], p[j] = p[j], p[i] }
 func (p PairList) Less(i, j int) bool { return p[i].Value < p[j].Value }
 
-func getInterval() int {
-	// get descheduling interval / other variables (Threshold?) from config
-	var env_interval string = os.Getenv("DESCHEDULING_INTERVAL")
-
-	interval, err := strconv.Atoi(env_interval)
-	if err == nil {
-		log.Printf("The current descheduling interval is %v", interval)
-	}
-
-	return interval
-}
-
 func evictNodePods(nodeName string, client *kubernetes.Clientset) {
 
 	pods, err := client.CoreV1().Pods("").List(context.TODO(), metav1.ListOptions{
@@ -50,13 +37,21 @@ func evictNodePods(nodeName string, client *kubernetes.Clientset) {
 		log.Fatal(err)
 	}
 
-	log.Printf("Following pods are going to be evicted from node %v: %v", nodeName, pods.Items)
-
-	for _, i := range pods.Items {
-		if i.Namespace == "kube-system" {
+	log.Printf("Following pods are going to be evicted from node %v:", nodeName)
+	for _, pod := range pods.Items {
+		if pod.Namespace == "kube-system" {
 			continue
 		} else {
-			err := client.CoreV1().Pods(i.Namespace).Delete(context.TODO(), i.Name, metav1.DeleteOptions{})
+			log.Printf(pod.Name)
+
+		}
+	}
+
+	for _, pod := range pods.Items {
+		if pod.Namespace == "kube-system" {
+			continue
+		} else {
+			err := client.CoreV1().Pods(pod.Namespace).Delete(context.TODO(), pod.Name, metav1.DeleteOptions{})
 			if err != nil {
 				log.Fatal(err)
 			}
@@ -133,7 +128,7 @@ func main() {
 		log.Printf("Error creating clientset: %v", err)
 	}
 	for {
-
+		log.Printf("Made it to the for loop!")
 		//var interval int = getInterval()
 
 		// list all nodes (only worker nodes?)
@@ -142,7 +137,10 @@ func main() {
 			log.Printf("Error listing nodes: %v", err)
 		}
 
-		log.Printf("Following nodes are available in the cluster: %v", nodeList.Items)
+		log.Printf("Following nodes are available in the cluster:")
+		for _, node := range nodeList.Items {
+			log.Printf(node.Name)
+		}
 
 		var scores map[string]int = CalculateScoresFromRenewables(nodeList)
 
@@ -152,7 +150,7 @@ func main() {
 
 		log.Printf("Node %v has the smallest renewable energy share / score... Evicting pods from node", lowestScoreNode)
 		evictNodePods(lowestScoreNode, clientset)
-
+		log.Printf("Sleeping...")
 		time.Sleep(time.Duration(INTERVAL) * time.Second)
 	}
 }
