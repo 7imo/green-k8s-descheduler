@@ -37,29 +37,21 @@ func evictNodePods(nodeName string, client *kubernetes.Clientset) {
 		log.Fatal(err)
 	}
 
-	log.Printf("Following pods are going to be evicted from node %v:", nodeName)
 	for _, pod := range pods.Items {
 		if pod.Namespace == "kube-system" {
 			continue
 		} else {
-			log.Printf(pod.Name)
-
-		}
-	}
-
-	for _, pod := range pods.Items {
-		if pod.Namespace == "kube-system" {
-			continue
-		} else {
+			log.Printf("Evicting %v from %v", pod.Name, nodeName)
 			err := client.CoreV1().Pods(pod.Namespace).Delete(context.TODO(), pod.Name, metav1.DeleteOptions{})
 			if err != nil {
 				log.Fatal(err)
 			}
+
 		}
 	}
 }
 
-func CalculateScoresFromRenewables(nodeList *v1.NodeList) map[string]int {
+func calculateScoresFromRenewables(nodeList *v1.NodeList) map[string]int {
 
 	renewables := make(map[string]float64)
 
@@ -77,10 +69,10 @@ func CalculateScoresFromRenewables(nodeList *v1.NodeList) map[string]int {
 		renewables[node.Name] = float64(renewableShare)
 	}
 
-	return NormalizeScores(renewables)
+	return normalizeScores(renewables)
 }
 
-func NormalizeScores(renewables map[string]float64) map[string]int {
+func normalizeScores(renewables map[string]float64) map[string]int {
 
 	highest := 1.0
 	scores := make(map[string]int)
@@ -100,7 +92,7 @@ func NormalizeScores(renewables map[string]float64) map[string]int {
 	return scores
 }
 
-func SortScores(scores map[string]int) PairList {
+func sortScores(scores map[string]int) PairList {
 
 	sortedScores := make(PairList, len(scores))
 
@@ -128,8 +120,6 @@ func main() {
 		log.Printf("Error creating clientset: %v", err)
 	}
 	for {
-		log.Printf("Made it to the for loop!")
-		//var interval int = getInterval()
 
 		// list all nodes (only worker nodes?)
 		nodeList, err := clientset.CoreV1().Nodes().List(context.TODO(), metav1.ListOptions{})
@@ -142,14 +132,16 @@ func main() {
 			log.Printf(node.Name)
 		}
 
-		var scores map[string]int = CalculateScoresFromRenewables(nodeList)
+		var scores map[string]int = calculateScoresFromRenewables(nodeList)
 
-		var sortedScores PairList = SortScores(scores)
+		var sortedScores PairList = sortScores(scores)
 
-		var lowestScoreNode string = sortedScores[len(sortedScores)-1].Key
+		var lowestScoreNode string = sortedScores[0].Key
+		var lowestScoreValue int = sortedScores[0].Value
 
-		log.Printf("Node %v has the smallest renewable energy share / score... Evicting pods from node", lowestScoreNode)
+		log.Printf("Node %v has the smallest renewable energy share with a score of %v... Evicting pods from node", lowestScoreNode, lowestScoreValue)
 		evictNodePods(lowestScoreNode, clientset)
+
 		log.Printf("Sleeping...")
 		time.Sleep(time.Duration(INTERVAL) * time.Second)
 	}
