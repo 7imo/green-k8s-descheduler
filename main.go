@@ -123,7 +123,7 @@ func main() {
 	for {
 
 		// list all nodes (only worker nodes?)
-		nodeList, err := clientset.CoreV1().Nodes().List(context.TODO(), metav1.ListOptions{})
+		nodeList, err := clientset.CoreV1().Nodes().List(context.TODO(), metav1.ListOptions{LabelSelector: "kubernetes.io/role=node"})
 		if err != nil {
 			log.Printf("Error listing nodes: %v", err)
 		}
