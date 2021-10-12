@@ -135,7 +135,6 @@ func main() {
 
 		var scores map[string]int = calculateScoresFromRenewables(nodeList)
 		var sortedScores PairList = sortScores(scores)
-		var nodeCount int = len(sortedScores)
 
 		switch MODE {
 		case "evictFromWorst":
@@ -148,11 +147,11 @@ func main() {
 
 		case "onlyKeepBest":
 			log.Printf("Evicting Pods from any Node except the one with the highest Score (%v)...", sortedScores[len(sortedScores)-1].Key)
+			var maxIndex int = len(sortedScores) - 1
 
-			if nodeCount == 1 {
+			if maxIndex == 0 {
 				log.Printf("Only one Node available... Keeping Pods.")
 			} else {
-				var maxIndex int = len(sortedScores) - 1
 				for i := maxIndex; i > 0; i-- {
 					// evicts the node at index i-1 if score is smaller
 					if sortedScores.Less(i-1, maxIndex) {
