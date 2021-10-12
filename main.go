@@ -122,7 +122,7 @@ func main() {
 	}
 	for {
 
-		// list all nodes (only worker nodes?)
+		// list all worker nodes
 		nodeList, err := clientset.CoreV1().Nodes().List(context.TODO(), metav1.ListOptions{LabelSelector: "kubernetes.io/role=node"})
 		if err != nil {
 			log.Printf("Error listing nodes: %v", err)
@@ -135,6 +135,7 @@ func main() {
 
 		var scores map[string]int = calculateScoresFromRenewables(nodeList)
 		var sortedScores PairList = sortScores(scores)
+		var nodeCount int = len(sortedScores)
 
 		switch MODE {
 		case "evictFromWorst":
@@ -147,9 +148,17 @@ func main() {
 
 		case "onlyKeepBest":
 			log.Printf("Evicting Pods from any Node except the one with the highest Score (%v)...", sortedScores[len(sortedScores)-1].Key)
-			for _, pair := range sortedScores[:len(sortedScores)-1] {
-				evictNodePods(pair.Key, clientset)
+
+			if nodeCount == 1 {
+				log.Printf("Only one Node available... Keeping Pods.")
+			} else {
+				for i := len(sortedScores) - 1; i > 0; i-- {
+					if sortedScores.Less(i-1, i) {
+						evictNodePods(sortedScores[i-1].Key, clientset)
+					}
+				}
 			}
+
 		case "default":
 			log.Printf("Default Case")
 		}
