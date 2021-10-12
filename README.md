@@ -12,3 +12,6 @@ docker push "${IMAGE}"
 ```
 kubectl apply -f descheduler.yaml
 ```
+
+#####  Monitor Logs
+kubectl -n kube-system logs deploy/green-k8s-descheduler -c green-k8s-descheduler -f

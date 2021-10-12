@@ -16,6 +16,7 @@ import (
 
 const MAX_SCORE = 10
 const INTERVAL = 60
+const MODE = "onlyKeepBest" // "evictFromWorst", "onlyKeepBest", "tbd"
 
 type Pair struct {
 	Key   string
@@ -133,14 +134,25 @@ func main() {
 		}
 
 		var scores map[string]int = calculateScoresFromRenewables(nodeList)
-
 		var sortedScores PairList = sortScores(scores)
 
-		var lowestScoreNode string = sortedScores[0].Key
-		var lowestScoreValue int = sortedScores[0].Value
+		switch MODE {
+		case "evictFromWorst":
+			log.Printf("Evicting Pods from Node with the lowest Score...")
+			var lowestScoreNode string = sortedScores[0].Key
+			var lowestScoreValue int = sortedScores[0].Value
 
-		log.Printf("Node %v has the smallest renewable energy share with a score of %v... Evicting pods from node", lowestScoreNode, lowestScoreValue)
-		evictNodePods(lowestScoreNode, clientset)
+			log.Printf("Node %v has the smallest renewable energy share with a score of %v... Evicting pods from node", lowestScoreNode, lowestScoreValue)
+			evictNodePods(lowestScoreNode, clientset)
+
+		case "onlyKeepBest":
+			log.Printf("Evicting Pods from any Node except the one with the highest Score (%v)...", sortedScores[len(sortedScores)-1].Key)
+			for _, pair := range sortedScores[:len(sortedScores)-1] {
+				evictNodePods(pair.Key, clientset)
+			}
+		case "default":
+			log.Printf("Default Case")
+		}
 
 		log.Printf("Sleeping...")
 		time.Sleep(time.Duration(INTERVAL) * time.Second)
