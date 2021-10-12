@@ -159,7 +159,7 @@ func main() {
 				}
 			}
 
-		case "default":
+		default:
 			log.Printf("Default Case")
 		}
 
