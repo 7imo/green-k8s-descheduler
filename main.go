@@ -152,8 +152,10 @@ func main() {
 			if nodeCount == 1 {
 				log.Printf("Only one Node available... Keeping Pods.")
 			} else {
-				for i := len(sortedScores) - 1; i > 0; i-- {
-					if sortedScores.Less(i-1, i) {
+				var maxIndex int = len(sortedScores) - 1
+				for i := maxIndex; i > 0; i-- {
+					// evicts the node at index i-1 if score is smaller
+					if sortedScores.Less(i-1, maxIndex) {
 						evictNodePods(sortedScores[i-1].Key, clientset)
 					}
 				}
