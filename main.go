@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"math"
 	"sort"
@@ -29,48 +30,59 @@ func (p PairList) Len() int           { return len(p) }
 func (p PairList) Swap(i, j int)      { p[i], p[j] = p[j], p[i] }
 func (p PairList) Less(i, j int) bool { return p[i].Value < p[j].Value }
 
-func evictNodePods(nodeName string, client *kubernetes.Clientset) {
+func getNodePods(nodeName string, client *kubernetes.Clientset) map[string]string {
+
+	pods_blitz := make(map[string]string)
 
 	pods, err := client.CoreV1().Pods("").List(context.TODO(), metav1.ListOptions{
-		FieldSelector: "spec.nodeName=" + nodeName,
+		FieldSelector: "spec.nodeName=" + nodeName + ",metadata.namespace=default",
 	})
 	if err != nil {
 		log.Fatal(err)
 	}
 
 	for _, pod := range pods.Items {
-		if pod.Namespace == "kube-system" {
-			continue
-		} else {
-			log.Printf("Evicting %v from %v", pod.Name, nodeName)
-			err := client.CoreV1().Pods(pod.Namespace).Delete(context.TODO(), pod.Name, metav1.DeleteOptions{})
-			if err != nil {
-				log.Fatal(err)
-			}
+		pods_blitz[pod.Name] = string(pod.Status.Phase)
+	}
 
+	return pods_blitz
+}
+
+func evictNodePods(nodeName string, client *kubernetes.Clientset) {
+
+	pods, err := client.CoreV1().Pods("").List(context.TODO(), metav1.ListOptions{
+		FieldSelector: "spec.nodeName=" + nodeName + ",metadata.namespace=default",
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	for _, pod := range pods.Items {
+		log.Printf("Evicting %v from %v", pod.Name, nodeName)
+		err := client.CoreV1().Pods(pod.Namespace).Delete(context.TODO(), pod.Name, metav1.DeleteOptions{})
+		if err != nil {
+			log.Fatal(err)
 		}
 	}
 }
 
-func calculateScoresFromRenewables(nodeList *v1.NodeList) map[string]int {
+func calculateScoresFromRenewables(nodeList *v1.NodeList) (map[string]int, map[string]float64) {
 
 	renewables := make(map[string]float64)
 
 	// read renewable shares from node annotations
 	for _, node := range nodeList.Items {
 
-		log.Printf("Parsing renewable share of node %v", node.Name)
 		renewableShare, err := strconv.ParseFloat(node.Annotations["renewable"], 64)
 		if err != nil {
 			log.Printf("Error parsing renewable share from node: %s \n", err.Error())
 			renewableShare = 0
 		}
 
-		log.Printf("Node %v has a renewable share of %v", node.Name, renewableShare)
 		renewables[node.Name] = float64(renewableShare)
 	}
 
-	return normalizeScores(renewables)
+	return normalizeScores(renewables), renewables
 }
 
 func normalizeScores(renewables map[string]float64) map[string]int {
@@ -81,13 +93,11 @@ func normalizeScores(renewables map[string]float64) map[string]int {
 
 	for _, renewableShare := range renewables {
 		highest = math.Max(highest, renewableShare)
-		log.Printf("Highest share so far: %v", highest)
 	}
 
 	for node, renewableShare := range renewables {
 		score = int(renewableShare * MAX_SCORE / highest)
 		scores[node] = score
-		log.Printf("Node %v has a score of %v", node, score)
 	}
 
 	return scores
@@ -127,28 +137,22 @@ func main() {
 		if err != nil {
 			log.Printf("Error listing nodes: %v", err)
 		}
+		var scores map[string]int
+		var renewables map[string]float64
 
-		log.Printf("Following nodes are available in the cluster:")
-		for _, node := range nodeList.Items {
-			log.Printf(node.Name)
-		}
-
-		var scores map[string]int = calculateScoresFromRenewables(nodeList)
+		scores, renewables = calculateScoresFromRenewables(nodeList)
 		var sortedScores PairList = sortScores(scores)
+		var maxIndex int = len(sortedScores) - 1
 
 		switch MODE {
 		case "evictFromWorst":
-			log.Printf("Evicting Pods from Node with the lowest Score...")
-			var lowestScoreNode string = sortedScores[0].Key
-			var lowestScoreValue int = sortedScores[0].Value
-
-			log.Printf("Node %v has the smallest renewable energy share with a score of %v... Evicting pods from node", lowestScoreNode, lowestScoreValue)
-			evictNodePods(lowestScoreNode, clientset)
+			if maxIndex == 0 {
+				log.Printf("Only one Node available... Keeping Pods.")
+			} else {
+				evictNodePods(sortedScores[0].Key, clientset)
+			}
 
 		case "onlyKeepBest":
-			log.Printf("Evicting Pods from any Node except the one with the highest Score (%v)...", sortedScores[len(sortedScores)-1].Key)
-			var maxIndex int = len(sortedScores) - 1
-
 			if maxIndex == 0 {
 				log.Printf("Only one Node available... Keeping Pods.")
 			} else {
@@ -163,8 +167,10 @@ func main() {
 		default:
 			log.Printf("Default Case")
 		}
-
-		log.Printf("Sleeping...")
+		// log some information for analysis TODO: Make this async to wait for new pods
+		for node, score := range scores {
+			log.Printf(node + ";" + fmt.Sprintf("%.2f", renewables[node]) + ";" + strconv.Itoa(score) + ";" + strconv.Itoa(len(getNodePods(node, clientset))))
+		}
 		time.Sleep(time.Duration(INTERVAL) * time.Second)
 	}
 }
