@@ -169,7 +169,7 @@ func main() {
 		}
 		// log some information for analysis TODO: Make this async to wait for new pods
 		for node, score := range scores {
-			log.Printf(node + ";" + fmt.Sprintf("%.2f", renewables[node]) + ";" + strconv.Itoa(score) + ";" + strconv.Itoa(len(getNodePods(node, clientset))))
+			log.Printf(";" + node + ";" + fmt.Sprintf("%.2f", renewables[node]) + ";" + strconv.Itoa(score) + ";" + strconv.Itoa(len(getNodePods(node, clientset))))
 		}
 		time.Sleep(time.Duration(INTERVAL) * time.Second)
 	}
