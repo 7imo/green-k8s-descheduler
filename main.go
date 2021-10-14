@@ -30,11 +30,11 @@ func (p PairList) Len() int           { return len(p) }
 func (p PairList) Swap(i, j int)      { p[i], p[j] = p[j], p[i] }
 func (p PairList) Less(i, j int) bool { return p[i].Value < p[j].Value }
 
-func getNodePods(nodeName string, client *kubernetes.Clientset) map[string]string {
+func getNodePods(nodeName string, clientset *kubernetes.Clientset) map[string]string {
+	// gets Pods and their states on a node
+	podStateMap := make(map[string]string)
 
-	pods_blitz := make(map[string]string)
-
-	pods, err := client.CoreV1().Pods("").List(context.TODO(), metav1.ListOptions{
+	pods, err := clientset.CoreV1().Pods("").List(context.TODO(), metav1.ListOptions{
 		FieldSelector: "spec.nodeName=" + nodeName + ",metadata.namespace=default",
 	})
 	if err != nil {
@@ -42,15 +42,15 @@ func getNodePods(nodeName string, client *kubernetes.Clientset) map[string]strin
 	}
 
 	for _, pod := range pods.Items {
-		pods_blitz[pod.Name] = string(pod.Status.Phase)
+		podStateMap[pod.Name] = string(pod.Status.Phase)
 	}
 
-	return pods_blitz
+	return podStateMap
 }
 
-func evictNodePods(nodeName string, client *kubernetes.Clientset) {
-
-	pods, err := client.CoreV1().Pods("").List(context.TODO(), metav1.ListOptions{
+func evictNodePods(nodeName string, clientset *kubernetes.Clientset) {
+	// deletes all pods in default namespace from node
+	pods, err := clientset.CoreV1().Pods("").List(context.TODO(), metav1.ListOptions{
 		FieldSelector: "spec.nodeName=" + nodeName + ",metadata.namespace=default",
 	})
 	if err != nil {
@@ -59,7 +59,7 @@ func evictNodePods(nodeName string, client *kubernetes.Clientset) {
 
 	for _, pod := range pods.Items {
 		log.Printf("Evicting %v from %v", pod.Name, nodeName)
-		err := client.CoreV1().Pods(pod.Namespace).Delete(context.TODO(), pod.Name, metav1.DeleteOptions{})
+		err := clientset.CoreV1().Pods(pod.Namespace).Delete(context.TODO(), pod.Name, metav1.DeleteOptions{})
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -67,7 +67,7 @@ func evictNodePods(nodeName string, client *kubernetes.Clientset) {
 }
 
 func calculateScoresFromRenewables(nodeList *v1.NodeList) (map[string]int, map[string]float64) {
-
+	// calculates node scores
 	renewables := make(map[string]float64)
 
 	// read renewable shares from node annotations
@@ -86,7 +86,7 @@ func calculateScoresFromRenewables(nodeList *v1.NodeList) (map[string]int, map[s
 }
 
 func normalizeScores(renewables map[string]float64) map[string]int {
-
+	// normalizes node scores
 	highest := 1.0
 	scores := make(map[string]int)
 	var score int
@@ -104,7 +104,7 @@ func normalizeScores(renewables map[string]float64) map[string]int {
 }
 
 func sortScores(scores map[string]int) PairList {
-
+	// sort node scores from worst to best
 	sortedScores := make(PairList, len(scores))
 
 	i := 0
@@ -118,6 +118,15 @@ func sortScores(scores map[string]int) PairList {
 	return sortedScores
 }
 
+func waitAndLog(scores map[string]int, renewables map[string]float64, clientset *kubernetes.Clientset) {
+	// sleep 15 sec to get updated state of Pods after eviction
+	time.Sleep(time.Duration(15) * time.Second)
+	// log data for each node
+	for node, score := range scores {
+		log.Printf(";" + node + ";" + fmt.Sprintf("%.2f", renewables[node]) + ";" + strconv.Itoa(score) + ";" + strconv.Itoa(len(getNodePods(node, clientset))))
+	}
+}
+
 func main() {
 
 	// creates the in-cluster config
@@ -125,7 +134,7 @@ func main() {
 	if err != nil {
 		log.Printf("Error creating in-cluster config: %v", err)
 	}
-	// creates the clientset
+	// creates the global clientset
 	clientset, err := kubernetes.NewForConfig(config)
 	if err != nil {
 		log.Printf("Error creating clientset: %v", err)
@@ -139,11 +148,13 @@ func main() {
 		}
 		var scores map[string]int
 		var renewables map[string]float64
-
 		scores, renewables = calculateScoresFromRenewables(nodeList)
+
+		// sort node scores
 		var sortedScores PairList = sortScores(scores)
 		var maxIndex int = len(sortedScores) - 1
 
+		// descheduling modes
 		switch MODE {
 		case "evictFromWorst":
 			if maxIndex == 0 {
@@ -165,12 +176,14 @@ func main() {
 			}
 
 		default:
+			// TODO
 			log.Printf("Default Case")
 		}
-		// log some information for analysis TODO: Make this async to wait for new pods
-		for node, score := range scores {
-			log.Printf(";" + node + ";" + fmt.Sprintf("%.2f", renewables[node]) + ";" + strconv.Itoa(score) + ";" + strconv.Itoa(len(getNodePods(node, clientset))))
-		}
+
+		// async log node information for analysis
+		go waitAndLog(scores, renewables, clientset)
+
+		// descheduling interval
 		time.Sleep(time.Duration(INTERVAL) * time.Second)
 	}
 }
