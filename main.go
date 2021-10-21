@@ -69,6 +69,8 @@ func evictNodePods(nodeName string, clientset *kubernetes.Clientset) {
 func calculateScoresFromRenewables(nodeList *v1.NodeList) (map[string]int, map[string]float64) {
 	// calculates node scores
 	renewables := make(map[string]float64)
+	forecasts := make(map[string]float64)
+	totals := make(map[string]float64)
 
 	// read renewable shares from node annotations
 	for _, node := range nodeList.Items {
@@ -79,23 +81,33 @@ func calculateScoresFromRenewables(nodeList *v1.NodeList) (map[string]int, map[s
 			renewableShare = 0
 		}
 
+		forecast, err := strconv.ParseFloat(node.Annotations["forecast"], 64)
+		if err != nil {
+			log.Printf("Error parsing forecast from node: %s \n", err.Error())
+			forecast = 0
+		}
+
 		renewables[node.Name] = float64(renewableShare)
+		forecasts[node.Name] = float64(forecast)
+		totals[node.Name] = float64(renewableShare + forecast)
 	}
 
-	return normalizeScores(renewables), renewables
+	return normalizeScores(totals), renewables
 }
 
-func normalizeScores(renewables map[string]float64) map[string]int {
+func normalizeScores(totals map[string]float64) map[string]int {
 	// normalizes node scores
 	highest := 1.0
 	scores := make(map[string]int)
 	var score int
 
-	for _, renewableShare := range renewables {
+	// find highest share
+	for _, renewableShare := range totals {
 		highest = math.Max(highest, renewableShare)
 	}
 
-	for node, renewableShare := range renewables {
+	// calculate score
+	for node, renewableShare := range totals {
 		score = int(renewableShare * MAX_SCORE / highest)
 		scores[node] = score
 	}
