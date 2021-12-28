@@ -53,3 +53,8 @@ spec:
         volumeMounts:
         - name: green-k8s-descheduler-config
           mountPath: /green-k8s-descheduler
+        env:
+        - name: INTERVAL
+          value: "60"
+        - name: THRESHOLD
+          value: "25"

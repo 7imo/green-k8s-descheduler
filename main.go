@@ -2,37 +2,132 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"log"
 	"math"
-	"sort"
+	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/clientcmd"
+	metrics "k8s.io/metrics/pkg/client/clientset/versioned"
 )
 
-const MAX_SCORE = 10
-const INTERVAL = 60
-const MODE = "onlyKeepBest" // "evictFromWorst", "onlyKeepBest", "tbd"
+var INTERVAL = os.Getenv("INTERVAL")
+var THRESHOLD = os.Getenv("THRESHOLD")
 
-type Pair struct {
-	Key   string
-	Value int
+const RATED_POWER_NODE = 10000
+
+func parseDataFromNodes(nodeList *v1.NodeList, windowSize int) map[string][]float64 {
+
+	nodeEnergyData := make(map[string][]float64)
+
+	// read renewable shares from node annotations
+	for _, node := range nodeList.Items {
+
+		var energyData []float64
+
+		sharesString := node.Annotations["renewables"]
+		if sharesString == "" {
+			log.Printf("Error parsing renewable share from node %v: No values found. Assigning renewable energy shares of 0.", node.Name)
+			for i := 0; i < windowSize; i += 1 {
+				energyData = append(energyData, 0.0)
+			}
+		} else {
+			// split renewable string into slice with single values
+			shares := strings.Split(sharesString, ";")
+			// convert strings to floats and append to data
+			for i := 0; i < windowSize; i += 1 {
+				f64, _ := strconv.ParseFloat(shares[i], 64)
+				energyData = append(energyData, float64(f64))
+			}
+		}
+
+		// Logs for Debugging
+		log.Printf("Renewable shares parsed from Node %v: %v", node.Name, energyData)
+
+		nodeEnergyData[node.Name] = energyData
+	}
+
+	return nodeEnergyData
 }
 
-type PairList []Pair
+func calculateCpuUtilization(nodeList *v1.NodeList) map[string]float64 {
 
-func (p PairList) Len() int           { return len(p) }
-func (p PairList) Swap(i, j int)      { p[i], p[j] = p[j], p[i] }
-func (p PairList) Less(i, j int) bool { return p[i].Value < p[j].Value }
+	nodeUtilization := make(map[string]float64)
+	var kubeconfig, master string //empty, assuming inClusterConfig
 
-func getNodePods(nodeName string, clientset *kubernetes.Clientset) map[string]string {
-	// gets Pods and their states on a node
-	podStateMap := make(map[string]string)
+	// initiate connection to metrics server
+	config, err := clientcmd.BuildConfigFromFlags(master, kubeconfig)
+	if err != nil {
+		panic(err)
+	}
+
+	mc, err := metrics.NewForConfig(config)
+	if err != nil {
+		panic(err)
+	}
+
+	for _, node := range nodeList.Items {
+
+		// get node metrics from metrics server
+		nodeMetricsList, err := mc.MetricsV1beta1().NodeMetricses().Get(context.TODO(), node.Name, metav1.GetOptions{})
+		if err != nil {
+			panic(err)
+		}
+
+		// get total allocatable CPU from node status
+		cpuAllocatableCores, _ := strconv.ParseFloat(node.Status.Allocatable.Cpu().String(), 64)
+		var cpuAllocatableNanoCores = cpuAllocatableCores * math.Pow(10, 9)
+
+		// get current CPU utilization from node metrics
+		cpuCurrentUsageNanoCores, _ := strconv.ParseFloat(strings.TrimSuffix(nodeMetricsList.Usage.Cpu().String(), "n"), 64)
+
+		var totalUtilization = cpuCurrentUsageNanoCores / cpuAllocatableNanoCores
+
+		nodeUtilization[node.Name] = totalUtilization
+	}
+
+	return nodeUtilization
+}
+
+func calculateRenewableExcess(energyData map[string][]float64, currentUtilization map[string]float64) map[string][]float64 {
+
+	renewablesExcess := make(map[string][]float64)
+
+	for node := range energyData {
+
+		var nodeRenewableExcess []float64
+		var currentNodeUtilization = currentUtilization[node]
+
+		// calculate consumption and round to two decimal places
+		var currentConsumption = roundToTwoDecimals(RATED_POWER_NODE * currentNodeUtilization)
+
+		log.Printf("Node %v with max input of %v W and current utilization of %v %% has a current consumption of %v W", node, RATED_POWER_NODE, math.Round(currentNodeUtilization*1000)/10, currentConsumption)
+
+		// calculate renewable energy excess for current node utilization
+		for _, renewableShare := range energyData[node] {
+			var excess = roundToTwoDecimals(renewableShare - currentConsumption)
+			nodeRenewableExcess = append(nodeRenewableExcess, excess)
+		}
+
+		log.Printf("Node %v has a renewable energy excess share of: %v ", node, nodeRenewableExcess)
+
+		renewablesExcess[node] = nodeRenewableExcess
+	}
+
+	return renewablesExcess
+}
+
+func roundToTwoDecimals(input float64) float64 {
+	return math.Round(input*100) / 100
+}
+
+func getNodePodCount(nodeName string, clientset *kubernetes.Clientset) int {
 
 	pods, err := clientset.CoreV1().Pods("").List(context.TODO(), metav1.ListOptions{
 		FieldSelector: "spec.nodeName=" + nodeName + ",metadata.namespace=default",
@@ -41,14 +136,10 @@ func getNodePods(nodeName string, clientset *kubernetes.Clientset) map[string]st
 		log.Fatal(err)
 	}
 
-	for _, pod := range pods.Items {
-		podStateMap[pod.Name] = string(pod.Status.Phase)
-	}
-
-	return podStateMap
+	return len(pods.Items)
 }
 
-func evictNodePods(nodeName string, clientset *kubernetes.Clientset) {
+func evictNodePods(nodeName string, podCount int, clientset *kubernetes.Clientset) {
 	// deletes all pods in default namespace from node
 	pods, err := clientset.CoreV1().Pods("").List(context.TODO(), metav1.ListOptions{
 		FieldSelector: "spec.nodeName=" + nodeName + ",metadata.namespace=default",
@@ -57,89 +148,120 @@ func evictNodePods(nodeName string, clientset *kubernetes.Clientset) {
 		log.Fatal(err)
 	}
 
-	for _, pod := range pods.Items {
+	for i, pod := range pods.Items {
 		log.Printf("Evicting %v from %v", pod.Name, nodeName)
 		err := clientset.CoreV1().Pods(pod.Namespace).Delete(context.TODO(), pod.Name, metav1.DeleteOptions{})
 		if err != nil {
 			log.Fatal(err)
 		}
+
+		if i+1 == podCount {
+			break
+		}
 	}
 }
 
-func calculateScoresFromRenewables(nodeList *v1.NodeList) (map[string]int, map[string]float64) {
-	// calculates node scores
-	renewables := make(map[string]float64)
-	forecasts := make(map[string]float64)
-	totals := make(map[string]float64)
+func checkIfDeschedulingPossible(renewableExcess map[string][]float64, clientset *kubernetes.Clientset) bool {
 
-	// read renewable shares from node annotations
+	var checkIfDeschedulingRequired = true
+	var positive = 0
+	var negative = 0
+	var totalPods = 0
+
+	for node, _ := range renewableExcess {
+		totalPods += getNodePodCount(node, clientset)
+	}
+	if totalPods == 0 {
+		log.Printf("No descheduling required: No Pods in cluster")
+		return false
+	}
+
+	for _, excess := range renewableExcess {
+		for i := range excess {
+			if excess[i] > 0 {
+				positive++
+			} else if excess[i] <= 0 {
+				negative++
+			}
+		}
+	}
+
+	if negative == 0 || positive == 0 {
+		checkIfDeschedulingRequired = false
+		log.Printf("No descheduling required: pos: %v, neg: %v", positive, negative)
+	} else {
+		log.Printf("descheduling required: pos: %v, neg: %v", positive, negative)
+	}
+
+	return checkIfDeschedulingRequired
+}
+
+func assessCandidates(renewableExcess map[string][]float64, currentUtilization map[string]float64, nodePodCount map[string]int, thresholdFactor float64) (string, int) {
+
+	var lowestExcess = 0.0
+	var highestExcess = 0.0
+	var deschedulingCandidate string
+	var schedulingCandidate string
+	var consumptionPerPod float64
+
+	for node, podCount := range nodePodCount {
+
+		if podCount > 0 {
+			if renewableExcess[node][0] < lowestExcess {
+				lowestExcess = renewableExcess[node][0]
+				deschedulingCandidate = node
+			}
+		}
+
+		if renewableExcess[node][0] > highestExcess {
+			highestExcess = renewableExcess[node][0]
+			schedulingCandidate = node
+		}
+	}
+
+	log.Printf("Descheduling Candidate: %v Scheduling Candidate: %v", deschedulingCandidate, schedulingCandidate)
+	log.Printf("Lowest Excess: %v Highest Excess: %v", lowestExcess, highestExcess)
+
+	consumptionPerPod = roundToTwoDecimals(RATED_POWER_NODE * currentUtilization[deschedulingCandidate] / float64(nodePodCount[deschedulingCandidate]))
+
+	log.Printf("Consumption per Pod: %v", consumptionPerPod)
+
+	for i := nodePodCount[deschedulingCandidate]; i > 0; i-- {
+		if highestExcess-consumptionPerPod*float64(i) > lowestExcess*thresholdFactor {
+			log.Printf("Eviction Recommendation: %v Pod(s) from Node %v", i, deschedulingCandidate)
+			return deschedulingCandidate, i
+		} else {
+			log.Printf("Not enough renewables to deschedule %v Pod(s) from Node %v: %v - %v * %v not greater than %v", i, deschedulingCandidate, highestExcess, consumptionPerPod, i, lowestExcess*thresholdFactor)
+		}
+	}
+
+	return deschedulingCandidate, 0
+}
+
+func countPodsOnNodes(nodeList *v1.NodeList, clientset *kubernetes.Clientset) map[string]int {
+
+	nodePodCount := make(map[string]int)
+
 	for _, node := range nodeList.Items {
-
-		renewableShare, err := strconv.ParseFloat(node.Annotations["renewable"], 64)
-		if err != nil {
-			log.Printf("Error parsing renewable share from node: %s \n", err.Error())
-			renewableShare = 0
-		}
-
-		forecast, err := strconv.ParseFloat(node.Annotations["forecast"], 64)
-		if err != nil {
-			log.Printf("Error parsing forecast from node: %s \n", err.Error())
-			forecast = 0
-		}
-
-		renewables[node.Name] = float64(renewableShare)
-		forecasts[node.Name] = float64(forecast)
-		totals[node.Name] = float64(renewableShare + forecast)
+		nodePodCount[node.Name] = getNodePodCount(node.Name, clientset)
 	}
-
-	return normalizeScores(totals), renewables
-}
-
-func normalizeScores(totals map[string]float64) map[string]int {
-	// normalizes node scores
-	highest := 1.0
-	scores := make(map[string]int)
-	var score int
-
-	// find highest share
-	for _, renewableShare := range totals {
-		highest = math.Max(highest, renewableShare)
-	}
-
-	// calculate score
-	for node, renewableShare := range totals {
-		score = int(renewableShare * MAX_SCORE / highest)
-		scores[node] = score
-	}
-
-	return scores
-}
-
-func sortScores(scores map[string]int) PairList {
-	// sort node scores from worst to best
-	sortedScores := make(PairList, len(scores))
-
-	i := 0
-	for k, v := range scores {
-		sortedScores[i] = Pair{k, v}
-		i++
-	}
-
-	sort.Sort(sortedScores)
-
-	return sortedScores
-}
-
-func waitAndLog(scores map[string]int, renewables map[string]float64, clientset *kubernetes.Clientset) {
-	// sleep 15 sec to get updated state of Pods after eviction
-	time.Sleep(time.Duration(15) * time.Second)
-	// log data for each node
-	for node, score := range scores {
-		log.Printf(";" + node + ";" + fmt.Sprintf("%.2f", renewables[node]) + ";" + strconv.Itoa(score) + ";" + strconv.Itoa(len(getNodePods(node, clientset))))
-	}
+	log.Printf("nodePodCount: %v", nodePodCount)
+	return nodePodCount
 }
 
 func main() {
+
+	THRESHOLD, err := strconv.Atoi(THRESHOLD)
+	if err != nil {
+		log.Printf("Error converting Threshold String: %v", err)
+	}
+
+	var thresholdFactor = (100 - float64(THRESHOLD)) / 100
+
+	INTERVAL, err := strconv.Atoi(INTERVAL)
+	if err != nil {
+		log.Printf("Error converting Interval String: %v", err)
+	}
 
 	// creates the in-cluster config
 	config, err := rest.InClusterConfig()
@@ -151,6 +273,9 @@ func main() {
 	if err != nil {
 		log.Printf("Error creating clientset: %v", err)
 	}
+
+	var windowSize = 1
+
 	for {
 
 		// list all worker nodes
@@ -158,42 +283,28 @@ func main() {
 		if err != nil {
 			log.Printf("Error listing nodes: %v", err)
 		}
-		var scores map[string]int
-		var renewables map[string]float64
-		scores, renewables = calculateScoresFromRenewables(nodeList)
 
-		// sort node scores
-		var sortedScores PairList = sortScores(scores)
-		var maxIndex int = len(sortedScores) - 1
+		log.Printf("parsing energy data")
+		var energyData = parseDataFromNodes(nodeList, windowSize)
+		log.Printf("calculate CPU utilization")
+		var currentUtilization = calculateCpuUtilization(nodeList)
 
-		// descheduling modes
-		switch MODE {
-		case "evictFromWorst":
-			if maxIndex == 0 {
-				log.Printf("Only one Node available... Keeping Pods.")
-			} else {
-				evictNodePods(sortedScores[0].Key, clientset)
+		log.Printf("calculate Renewable excess")
+		var renewableExcess = calculateRenewableExcess(energyData, currentUtilization)
+
+		log.Printf("count Pods on Nodes")
+		var nodePodCount = countPodsOnNodes(nodeList, clientset)
+
+		log.Printf("check if descheduling is required")
+		var deschedulingPossible = checkIfDeschedulingPossible(renewableExcess, clientset)
+
+		// descheduling
+		if deschedulingPossible {
+			var deschedulingCandidate, podCount = assessCandidates(renewableExcess, currentUtilization, nodePodCount, thresholdFactor)
+			if podCount > 0 {
+				evictNodePods(deschedulingCandidate, podCount, clientset)
 			}
-
-		case "onlyKeepBest":
-			if maxIndex == 0 {
-				log.Printf("Only one Node available... Keeping Pods.")
-			} else {
-				for i := maxIndex; i > 0; i-- {
-					// evicts the node at index i-1 if score is smaller
-					if sortedScores.Less(i-1, maxIndex) {
-						evictNodePods(sortedScores[i-1].Key, clientset)
-					}
-				}
-			}
-
-		default:
-			// TODO
-			log.Printf("Default Case")
 		}
-
-		// async log node information for analysis
-		go waitAndLog(scores, renewables, clientset)
 
 		// descheduling interval
 		time.Sleep(time.Duration(INTERVAL) * time.Second)
