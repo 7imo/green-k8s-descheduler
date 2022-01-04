@@ -57,4 +57,4 @@ spec:
         - name: INTERVAL
           value: "60"
         - name: THRESHOLD
-          value: "25"
+          value: "10"

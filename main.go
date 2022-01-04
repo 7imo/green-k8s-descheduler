@@ -17,9 +17,11 @@ import (
 	metrics "k8s.io/metrics/pkg/client/clientset/versioned"
 )
 
+// read config from descheduler.yaml
 var INTERVAL = os.Getenv("INTERVAL")
 var THRESHOLD = os.Getenv("THRESHOLD")
 
+// node power constant
 const RATED_POWER_NODE = 10000
 
 func parseDataFromNodes(nodeList *v1.NodeList, windowSize int) map[string][]float64 {
@@ -168,7 +170,7 @@ func checkIfDeschedulingPossible(renewableExcess map[string][]float64, clientset
 	var negative = 0
 	var totalPods = 0
 
-	for node, _ := range renewableExcess {
+	for node := range renewableExcess {
 		totalPods += getNodePodCount(node, clientset)
 	}
 	if totalPods == 0 {
@@ -190,7 +192,7 @@ func checkIfDeschedulingPossible(renewableExcess map[string][]float64, clientset
 		checkIfDeschedulingRequired = false
 		log.Printf("No descheduling required: pos: %v, neg: %v", positive, negative)
 	} else {
-		log.Printf("descheduling required: pos: %v, neg: %v", positive, negative)
+		log.Printf("Descheduling required: pos: %v, neg: %v", positive, negative)
 	}
 
 	return checkIfDeschedulingRequired
@@ -219,12 +221,7 @@ func assessCandidates(renewableExcess map[string][]float64, currentUtilization m
 		}
 	}
 
-	log.Printf("Descheduling Candidate: %v Scheduling Candidate: %v", deschedulingCandidate, schedulingCandidate)
-	log.Printf("Lowest Excess: %v Highest Excess: %v", lowestExcess, highestExcess)
-
 	consumptionPerPod = roundToTwoDecimals(RATED_POWER_NODE * currentUtilization[deschedulingCandidate] / float64(nodePodCount[deschedulingCandidate]))
-
-	log.Printf("Consumption per Pod: %v", consumptionPerPod)
 
 	for i := nodePodCount[deschedulingCandidate]; i > 0; i-- {
 		if highestExcess-consumptionPerPod*float64(i) > lowestExcess*thresholdFactor {
@@ -245,7 +242,7 @@ func countPodsOnNodes(nodeList *v1.NodeList, clientset *kubernetes.Clientset) ma
 	for _, node := range nodeList.Items {
 		nodePodCount[node.Name] = getNodePodCount(node.Name, clientset)
 	}
-	log.Printf("nodePodCount: %v", nodePodCount)
+
 	return nodePodCount
 }
 
@@ -254,6 +251,7 @@ func main() {
 	THRESHOLD, err := strconv.Atoi(THRESHOLD)
 	if err != nil {
 		log.Printf("Error converting Threshold String: %v", err)
+		//TODO: Set default?
 	}
 
 	var thresholdFactor = (100 - float64(THRESHOLD)) / 100
@@ -261,6 +259,7 @@ func main() {
 	INTERVAL, err := strconv.Atoi(INTERVAL)
 	if err != nil {
 		log.Printf("Error converting Interval String: %v", err)
+		//TODO: Set default?
 	}
 
 	// creates the in-cluster config
@@ -284,18 +283,10 @@ func main() {
 			log.Printf("Error listing nodes: %v", err)
 		}
 
-		log.Printf("parsing energy data")
 		var energyData = parseDataFromNodes(nodeList, windowSize)
-		log.Printf("calculate CPU utilization")
 		var currentUtilization = calculateCpuUtilization(nodeList)
-
-		log.Printf("calculate Renewable excess")
 		var renewableExcess = calculateRenewableExcess(energyData, currentUtilization)
-
-		log.Printf("count Pods on Nodes")
 		var nodePodCount = countPodsOnNodes(nodeList, clientset)
-
-		log.Printf("check if descheduling is required")
 		var deschedulingPossible = checkIfDeschedulingPossible(renewableExcess, clientset)
 
 		// descheduling
