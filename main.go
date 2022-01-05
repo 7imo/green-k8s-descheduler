@@ -165,7 +165,6 @@ func evictNodePods(nodeName string, podCount int, clientset *kubernetes.Clientse
 
 func checkIfDeschedulingPossible(renewableExcess map[string][]float64, clientset *kubernetes.Clientset) bool {
 
-	var checkIfDeschedulingRequired = true
 	var positive = 0
 	var negative = 0
 	var totalPods = 0
@@ -173,6 +172,7 @@ func checkIfDeschedulingPossible(renewableExcess map[string][]float64, clientset
 	for node := range renewableExcess {
 		totalPods += getNodePodCount(node, clientset)
 	}
+	// no descheduling required if no Pods in cluster
 	if totalPods == 0 {
 		log.Printf("No descheduling required: No Pods in cluster")
 		return false
@@ -188,14 +188,14 @@ func checkIfDeschedulingPossible(renewableExcess map[string][]float64, clientset
 		}
 	}
 
+	// no descheduling required if all nodes have negative excess / all nodes have positive excess
 	if negative == 0 || positive == 0 {
-		checkIfDeschedulingRequired = false
+		return false
 		log.Printf("No descheduling required: pos: %v, neg: %v", positive, negative)
 	} else {
 		log.Printf("Descheduling required: pos: %v, neg: %v", positive, negative)
+		return true
 	}
-
-	return checkIfDeschedulingRequired
 }
 
 func assessCandidates(renewableExcess map[string][]float64, currentUtilization map[string]float64, nodePodCount map[string]int, thresholdFactor float64) (string, int) {
@@ -203,7 +203,6 @@ func assessCandidates(renewableExcess map[string][]float64, currentUtilization m
 	var lowestExcess = 0.0
 	var highestExcess = 0.0
 	var deschedulingCandidate string
-	var schedulingCandidate string
 	var consumptionPerPod float64
 
 	for node, podCount := range nodePodCount {
@@ -217,7 +216,6 @@ func assessCandidates(renewableExcess map[string][]float64, currentUtilization m
 
 		if renewableExcess[node][0] > highestExcess {
 			highestExcess = renewableExcess[node][0]
-			schedulingCandidate = node
 		}
 	}
 
@@ -247,19 +245,23 @@ func countPodsOnNodes(nodeList *v1.NodeList, clientset *kubernetes.Clientset) ma
 }
 
 func main() {
+	// considers current renewable energy availability
+	var windowSize = 1
 
+	// get threshold from config
 	THRESHOLD, err := strconv.Atoi(THRESHOLD)
 	if err != nil {
-		log.Printf("Error converting Threshold String: %v", err)
-		//TODO: Set default?
+		log.Printf("Error converting Threshold String: %v - Setting default Threshold of 0", err)
+		THRESHOLD = 0
 	}
 
 	var thresholdFactor = (100 - float64(THRESHOLD)) / 100
 
+	// get interval from config
 	INTERVAL, err := strconv.Atoi(INTERVAL)
 	if err != nil {
-		log.Printf("Error converting Interval String: %v", err)
-		//TODO: Set default?
+		log.Printf("Error converting Interval String: %v - Setting default Interval of 10 Minutes", err)
+		INTERVAL = 600
 	}
 
 	// creates the in-cluster config
@@ -273,8 +275,6 @@ func main() {
 		log.Printf("Error creating clientset: %v", err)
 	}
 
-	var windowSize = 1
-
 	for {
 
 		// list all worker nodes
@@ -287,10 +287,12 @@ func main() {
 		var currentUtilization = calculateCpuUtilization(nodeList)
 		var renewableExcess = calculateRenewableExcess(energyData, currentUtilization)
 		var nodePodCount = countPodsOnNodes(nodeList, clientset)
+		// checks if there is an imbalance in renewable excess energy
 		var deschedulingPossible = checkIfDeschedulingPossible(renewableExcess, clientset)
 
 		// descheduling
 		if deschedulingPossible {
+			// determines node to deschedule from and number of pods that can be descheduled
 			var deschedulingCandidate, podCount = assessCandidates(renewableExcess, currentUtilization, nodePodCount, thresholdFactor)
 			if podCount > 0 {
 				evictNodePods(deschedulingCandidate, podCount, clientset)

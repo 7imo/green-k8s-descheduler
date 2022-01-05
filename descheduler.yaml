@@ -54,7 +54,7 @@ spec:
         - name: green-k8s-descheduler-config
           mountPath: /green-k8s-descheduler
         env:
-        - name: INTERVAL
+        - name: INTERVAL # in seconds
           value: "60"
-        - name: THRESHOLD
+        - name: THRESHOLD # in percent
           value: "10"
